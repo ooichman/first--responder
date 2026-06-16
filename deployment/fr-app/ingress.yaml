@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: first-responder-ingress
+  namespace: first-responder
+  annotations:
+    haproxy.org/ssl-redirect: "true"
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts:
+        - first-responder.apps.k3s-dom.local
+      secretName: ingress-tls
+  rules:
+    - host: first-responder.apps.k3s-dom.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: first-responder-service
+                port:
+                  number: 8080  # Updated to target your Service's 8080 port
