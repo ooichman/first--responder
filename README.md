@@ -139,6 +139,20 @@ kubectl get ingress -n first-responder
 
 ## 6. API Testing
 
+### Static Check
+
+```bash
+curl -k https://first-responder.apps.k3s-dom.local/static
+```
+
+##### Expected Output
+```json
+{
+  "service": "static",
+  "status": "o.k."
+}
+```
+
 ### Check Service Status
 
 ```bash
