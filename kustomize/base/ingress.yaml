@@ -4,12 +4,17 @@ metadata:
   name: first-responder-ingress
   annotations:
     haproxy.org/ssl-redirect: "true"
+    haproxy.org/timeout-server: "180s"
+    haproxy.org/timeout-client: "180s"
 spec:
   ingressClassName: haproxy
   tls:
-    - secretName: ingress-tls
+    - hosts:
+        - first-responder.apps.k3s-dom.local
+      secretName: ingress-tls
   rules:
-    - http:
+    - host: first-responder.apps.k3s-dom.local
+      http:
         paths:
           - path: /
             pathType: Prefix
