@@ -196,6 +196,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/analyze", handleAnalyze)
 	mux.HandleFunc("/healthz", handleHealthz)
+	mux.HandleFunc("/status", handleStatus)
+	mux.HandleFunc("/static", handleStatic)
 
 	server := &http.Server{
 		Addr:    ":" + port,
@@ -224,10 +226,95 @@ func main() {
 	log.Println("Server stopped")
 }
 
+func handleStatic(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"service": "static", "status": "o.k."})
+}
+
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+	type ServiceCheck struct {
+		Service   string `json:"service"`
+		Status    string `json:"status"`
+		LatencyMs int64  `json:"latency_ms,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}
+
+	type StatusResponse struct {
+		Status   string         `json:"status"`
+		Services []ServiceCheck `json:"services"`
+	}
+
+	var checks []ServiceCheck
+
+	// Check vLLM service availability
+	llmCheck := ServiceCheck{Service: "vllm"}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, os.Getenv("LLM_API_BASE")+"/../health", nil)
+	if req != nil {
+		baseURL := strings.TrimSuffix(os.Getenv("LLM_API_BASE"), "/v1")
+		req, _ = http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
+	}
+
+	if req != nil {
+		resp, err := http.DefaultClient.Do(req)
+		llmCheck.LatencyMs = time.Since(start).Milliseconds()
+		if err != nil {
+			llmCheck.Status = "unavailable"
+			llmCheck.Error = err.Error()
+		} else {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				llmCheck.Status = "healthy"
+			} else {
+				llmCheck.Status = "degraded"
+				llmCheck.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+		}
+	} else {
+		llmCheck.Status = "unconfigured"
+		llmCheck.Error = "LLM_API_BASE not set"
+	}
+	checks = append(checks, llmCheck)
+
+	// Check companydocs availability
+	docsCheck := ServiceCheck{Service: "companydocs"}
+	if len(companyDocs) > 0 {
+		docsCheck.Status = "healthy"
+	} else {
+		docsCheck.Status = "degraded"
+		docsCheck.Error = "no documents loaded"
+	}
+	checks = append(checks, docsCheck)
+
+	// Overall status
+	overall := "healthy"
+	for _, c := range checks {
+		if c.Status == "unavailable" {
+			overall = "unavailable"
+			break
+		}
+		if c.Status == "degraded" {
+			overall = "degraded"
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if overall != "healthy" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	json.NewEncoder(w).Encode(StatusResponse{Status: overall, Services: checks})
 }
 
 func handleAnalyze(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +328,10 @@ func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var req ErrorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON input", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Log) == "" {
+		http.Error(w, "Missing or empty 'log' field", http.StatusBadRequest)
 		return
 	}
 
@@ -262,7 +353,7 @@ Do not return any conversational text, markdown wrapping (like ` + "```json" + `
 		{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("Error Log: %s", req.Log)},
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	// First LLM Call: Let the agent decide which tools to invoke
@@ -272,11 +363,13 @@ Do not return any conversational text, markdown wrapping (like ` + "```json" + `
 		Tools:    llmTools,
 	})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("LLM call failed: %v", err), http.StatusInternalServerError)
+		log.Printf("[LLM Error] Initial call failed: %v", err)
+		http.Error(w, "Analysis service temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if len(resp.Choices) == 0 {
-		http.Error(w, "LLM returned no response", http.StatusInternalServerError)
+		log.Printf("[LLM Error] No choices returned in initial response")
+		http.Error(w, "Analysis service returned empty response", http.StatusInternalServerError)
 		return
 	}
 
@@ -331,18 +424,29 @@ Do not return any conversational text, markdown wrapping (like ` + "```json" + `
 			Tools:    llmTools,
 		})
 		if err != nil {
-			http.Error(w, fmt.Sprintf("LLM follow-up call failed: %v", err), http.StatusInternalServerError)
+			log.Printf("[LLM Error] Follow-up call failed (round %d): %v", round+1, err)
+			http.Error(w, "Analysis service temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if len(followUp.Choices) == 0 {
-			http.Error(w, "LLM returned no response", http.StatusInternalServerError)
+			log.Printf("[LLM Error] No choices returned in follow-up (round %d)", round+1)
+			http.Error(w, "Analysis service returned empty response", http.StatusInternalServerError)
 			return
 		}
 		message = followUp.Choices[0].Message
 	}
 
-	if len(message.ToolCalls) > 0 {
-		log.Printf("[Warning] LLM exceeded max tool rounds (%d), forcing response", maxToolRounds)
+	// Handle case where LLM exceeded max tool rounds without producing text
+	if len(message.ToolCalls) > 0 || strings.TrimSpace(message.Content) == "" {
+		log.Printf("[Warning] LLM exceeded max tool rounds (%d) or returned empty content", maxToolRounds)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(ResponseSchema{
+			Summary:         "Analysis could not be completed within the allowed reasoning steps.",
+			ConfidenceScore: 0,
+			ActionItems:     []string{"Retry the request", "Escalate to Senior Dev for manual analysis"},
+		})
+		return
 	}
 
 	// Parse and validate structured output

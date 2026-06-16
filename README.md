@@ -19,7 +19,10 @@ The agent uses an LLM to "reason" about the error. It is equipped with at least 
 5. The LLM returns a structured JSON response containing a summary, confidence score, and recommended action items.
 
 **Tool — `get_company_docs`:**
-A mock function simulating access to internal company troubleshooting documentation. It performs keyword-based matching (e.g., `500`, `403`, `db`) and returns relevant remediation guidance to the LLM.
+Retrieves internal company troubleshooting documentation from markdown files in the `companydocs/` directory. It performs keyword-based matching against filenames and content, returning relevant remediation guidance to the LLM.
+
+**Tool — `get_service_status`:**
+Checks the real-time health status and metrics of infrastructure services (e.g., database, cache, api-gateway, auth-service, message-queue). Returns JSON with service status, latency, and recent incidents to help the agent correlate errors with infrastructure issues.
 
 ## 3. vLLM Inference Engine Deployment
 
@@ -82,7 +85,7 @@ spec:
 All Kubernetes manifests are managed with [Kustomize](https://kustomize.io/). The layout:
 
 ```
-deployment/
+kustomize/
 ├── base/                    # Shared resources (Deployment, Service, Ingress, vLLM, etc.)
 │   └── kustomization.yaml
 └── overlays/
@@ -96,7 +99,7 @@ deployment/
 ### Step 1: Generate TLS Certificates
 
 ```bash
-cd deployment/overlays/local
+cd kustomize/overlays/local
 ./generate-certs.sh
 ```
 
@@ -122,7 +125,7 @@ api-key=not-needed
 ### Step 3: Deploy
 
 ```bash
-kubectl apply -k deployment/overlays/local
+kubectl apply -k kustomize/overlays/local
 ```
 
 This creates all resources in the `first-responder` namespace: the app deployment, vLLM engine, services, ingress, TLS secret, and LLM credentials secret.
@@ -136,12 +139,41 @@ kubectl get ingress -n first-responder
 
 ## 6. API Testing
 
-Use `curl` to send a log entry to the endpoint:
+### Static Check
 
 ```bash
-export INGRESS_IP=$(kubectl get ingress -n first-responder first-responder-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+curl -k https://first-responder.apps.k3s-dom.local/static
+```
 
-curl -k -X POST https://${INGRESS_IP}/analyze \
+##### Expected Output
+```json
+{
+  "service": "static",
+  "status": "o.k."
+}
+```
+
+### Check Service Status
+
+```bash
+curl -k https://first-responder.apps.k3s-dom.local/status
+```
+
+##### Expected Output
+```json
+{
+  "status": "healthy",
+  "services": [
+    {"service": "vllm", "status": "healthy", "latency_ms": 12},
+    {"service": "companydocs", "status": "healthy"}
+  ]
+}
+```
+
+### Analyze a Log
+
+```bash
+curl -k -X POST https://first-responder.apps.k3s-dom.local/analyze \
    -H "Content-Type: application/json" \
    -d '{"log": "Panic exception error: 500 downstream DB connection timed out"}'
 ```
