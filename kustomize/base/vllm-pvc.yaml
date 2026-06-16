@@ -2,11 +2,10 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: vllm-model-cache
-  namespace: first-responder
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-path  # Built-in default storage provisioner in K3s
+  storageClassName: local-path
   resources:
     requests:
       storage: 20Gi
