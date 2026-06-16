@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: first-responder
+  labels:
+    app: first-responder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: first-responder
+  template:
+    metadata:
+      labels:
+        app: first-responder
+    spec:
+      serviceAccountName: first-responder
+      containers:
+        - name: first-responder-agent
+          image: first-responder:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: LLM_API_BASE
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: api-base
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: model
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: api-key
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

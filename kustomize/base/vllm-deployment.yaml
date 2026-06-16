@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vllm-server
-  namespace: first-responder
   labels:
     app: vllm-server
 spec:
@@ -19,11 +18,10 @@ spec:
         - name: cache-volume
           persistentVolumeClaim:
             claimName: vllm-model-cache
-        # 1. Define an emptyDir volume backed by the host's RAM
         - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: "2Gi" # Gives vLLM plenty of room for IPC communication
+            sizeLimit: "2Gi"
       containers:
         - name: vllm-engine
           image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:latest
@@ -40,17 +38,14 @@ spec:
             - "1"
             - "--gpu-memory-utilization"
             - "0.7"
-            # 1. Instruct vLLM to accept and evaluate automated function-routing parameters
             - "--enable-auto-tool-choice"
-            # 2. Tell vLLM to use the Hermes format syntax natively embedded in Qwen 2.5
             - "--tool-call-parser"
             - "hermes"
           env:
             - name: VLLM_TARGET_DEVICE
               value: "cpu"
-            # Optional fallback if you are on an older vLLM build supporting V0
             - name: VLLM_USE_V1
-              value: "0" 
+              value: "0"
           ports:
             - containerPort: 8000
           resources:
@@ -63,6 +58,5 @@ spec:
           volumeMounts:
             - mountPath: /root/.cache/huggingface
               name: cache-volume
-            # 2. Mount the shared memory volume directly to /dev/shm
             - mountPath: /dev/shm
               name: dshm

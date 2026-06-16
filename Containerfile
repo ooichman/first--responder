@@ -11,5 +11,6 @@ FROM alpine:3.19
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 COPY --from=builder /first-responder .
+COPY companydocs/ ./companydocs/
 EXPOSE 8080
 CMD ["./first-responder"]
